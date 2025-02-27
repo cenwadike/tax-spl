@@ -39,19 +39,19 @@ describe("tax-token", () => {
   const tokenDecimals = 9;
   const tokenTotalSupply = 1_000_000_000 * 10 ** tokenDecimals; // 1 billion tokens
 
+  const admin = Keypair.generate();
+  console.log("Admin: ", admin.publicKey.toString());
+  const sig: Signer = {
+    publicKey: authority.publicKey,
+    secretKey: authority.secretKey
+  }
+  const mintSig: Signer = {
+    publicKey: tokenMintKeypair.publicKey,
+    secretKey: tokenMintKeypair.secretKey
+  }
+
   it("Initializes the tax token", async () => {
     console.log("Starting tax token initialization test...");
-
-    const admin = Keypair.generate();
-    console.log("Admin: ", admin.publicKey.toString());
-    const sig: Signer = {
-      publicKey: authority.publicKey,
-      secretKey: authority.secretKey
-    }
-    const mintSig: Signer = {
-      publicKey: tokenMintKeypair.publicKey,
-      secretKey: tokenMintKeypair.secretKey
-    }
 
     await program.provider.connection.confirmTransaction(
       await program.provider.connection.requestAirdrop(
@@ -178,11 +178,78 @@ describe("tax-token", () => {
       );
 
       const mintRes = await mintTo(provider.connection, authority, tokenMintKeypair.publicKey, senderTokenAccountAddress, authority, tokenTotalSupply, [], null, TOKEN_2022_PROGRAM_ID);  
-      console.log("✅ Mint passed - Token minted successfully!");
       console.log("Transaction Signature: ", mintRes)
+      console.log("✅ Mint passed - Token minted successfully!");
     } catch (error) {
       console.error("Error minting tokens");
       throw error
     }  
+  });
+
+  it('Transfer', async () => {
+    const recipient = Keypair.generate();
+
+    const transactionSignature = await program.methods
+      .transfer(new anchor.BN(100))
+      .accounts({
+        sender: authority.publicKey,
+        recipient: recipient.publicKey,
+        mintAccount: tokenMintKeypair.publicKey,
+      })
+      .signers([sig])
+      .rpc({ skipPreflight: true });
+    console.log('Your transaction signature', transactionSignature);
+    console.log("✅ Transfer passed - Token transferred successfully!");
+  });
+
+  it('Harvest Transfer Fees to Mint Account', async () => {
+    const recipientTokenAccountAddress = getAssociatedTokenAddressSync(tokenMintKeypair.publicKey, authority.publicKey, false, TOKEN_2022_PROGRAM_ID);
+    const transactionSignature = await program.methods
+      .harvest()
+      .accounts({ mintAccount: tokenMintKeypair.publicKey })
+      .remainingAccounts([
+        {
+          pubkey: recipientTokenAccountAddress,
+          isSigner: false,
+          isWritable: true,
+        },
+      ])
+      .rpc({ skipPreflight: true });
+    console.log('Your transaction signature', transactionSignature);
+    console.log("✅ Harvest passed - Token harvested successfully!");
+  });
+
+  it('Withdraw Transfer Fees from Mint Account', async () => {
+      const senderTokenAccountAddress = getAssociatedTokenAddressSync(tokenMintKeypair.publicKey, authority.publicKey, false, TOKEN_2022_PROGRAM_ID);
+
+    const transactionSignature = await program.methods
+      .withdraw()
+      .accounts({
+        authority: authority.publicKey,
+        mintAccount: tokenMintKeypair.publicKey,
+        tokenAccount: senderTokenAccountAddress,
+      })
+      .signers([sig])
+      .rpc({ skipPreflight: true });
+    console.log('Your transaction signature', transactionSignature);
+    console.log("✅ Withdraw passed - Token tax withdraw successfully!");
+  });
+
+  it('Update Transfer Fee', async () => {
+    const transferFeeBasisPoints = 0;
+    const maximumFee = 0;
+
+    const transactionSignature = await program.methods
+      .updateFee(transferFeeBasisPoints, new anchor.BN(maximumFee))
+      .accounts(
+        { 
+          authority: authority.publicKey,
+          mintAccount: tokenMintKeypair.publicKey,
+        }
+      )
+      .signers([sig])
+      .rpc({ skipPreflight: true });
+    console.log('Your transaction signature', transactionSignature);
+    console.log("✅ Update passed - Token tax fee updated successfully!");
   });
 });
