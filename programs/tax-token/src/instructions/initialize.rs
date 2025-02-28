@@ -1,10 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{create_account, CreateAccount};
-use anchor_spl::{
-    associated_token::AssociatedToken,
-    token::{Mint as TokenMint, Token, TokenAccount},
-    token_2022::ID as TOKEN_2022_ID,
-};
+use anchor_spl::{associated_token::AssociatedToken, token::Mint as TokenMint};
 use anchor_spl::{
     token_2022::{
         initialize_mint2,
@@ -26,12 +22,7 @@ use anchor_spl::{
 
 use crate::{InitTokenParams, ProgramState, TAX_BASIS_POINT};
 
-pub fn process_initialize(
-    ctx: Context<Initialize>,
-    params: InitTokenParams,
-    tax_treasury: Pubkey,
-    reward_treasury: Pubkey,
-) -> Result<()> {
+pub fn process_initialize(ctx: Context<Initialize>, params: InitTokenParams) -> Result<()> {
     msg!("Initializing SPL token with 6% tax");
 
     // Initialize the program state
@@ -39,10 +30,7 @@ pub fn process_initialize(
     state.authority = ctx.accounts.authority.key();
     state.token_mint = ctx.accounts.token_mint.key();
     state.reward_mint = ctx.accounts.reward_mint.key();
-    state.treasury = tax_treasury;
-    state.reward_treasury = reward_treasury;
     state.last_distribution_time = Clock::get()?.unix_timestamp;
-    state.total_tax_collected = 0;
 
     // Calculate space required for mint and extension data
     let mint_size =

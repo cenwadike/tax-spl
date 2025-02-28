@@ -1,6 +1,9 @@
 pub mod initialize;
 pub use initialize::*;
 
+pub mod update_program_state;
+pub use update_program_state::*;
+
 pub mod transfer;
 pub use transfer::*;
 

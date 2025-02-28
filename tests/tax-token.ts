@@ -5,11 +5,9 @@ import { PublicKey, Keypair, SystemProgram, Signer, LAMPORTS_PER_SOL } from "@so
 import { 
   TOKEN_2022_PROGRAM_ID, 
   ASSOCIATED_TOKEN_PROGRAM_ID,
-  getAssociatedTokenAddress,
   createMint,
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
-  getMint,
   getOrCreateAssociatedTokenAccount,
   mintTo
 } from "@solana/spl-token";
@@ -22,7 +20,6 @@ describe("tax-token", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.TaxToken as Program<TaxToken>;
-  const tokenMetadataProgramId = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
   
   // Generate a new keypair for the reward mint
   const tokenMintKeypair = Keypair.generate();
@@ -38,6 +35,12 @@ describe("tax-token", () => {
   const tokenUri = "https://example.com/metadata.json";
   const tokenDecimals = 9;
   const tokenTotalSupply = 1_000_000_000 * 10 ** tokenDecimals; // 1 billion tokens
+
+  // Find PDA addresses
+  const [statePda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("program_state")],
+    program.programId
+  );
 
   const admin = Keypair.generate();
   console.log("Admin: ", admin.publicKey.toString());
@@ -77,12 +80,6 @@ describe("tax-token", () => {
       "confirmed"
     );
 
-    // Find PDA addresses
-    const [statePda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("program_state")],
-      program.programId
-    );
-    
     const tokenMint =  tokenMintKeypair.publicKey;   
     
     console.log("Creating reward mint...");
@@ -95,20 +92,6 @@ describe("tax-token", () => {
       tokenDecimals,
       rewardMintKeypair,
       undefined,
-      TOKEN_PROGRAM_ID
-    );
-    
-    const treasuryAccount = getAssociatedTokenAddressSync(
-      tokenMint,
-      statePda,
-      true,
-      TOKEN_2022_PROGRAM_ID
-    );
-    
-    const rewardTreasuryAccount = await getAssociatedTokenAddress(
-      rewardMint,
-      statePda,
-      true,
       TOKEN_PROGRAM_ID
     );
     
@@ -134,9 +117,7 @@ describe("tax-token", () => {
             uri: tokenUri,
             decimals: tokenDecimals,
             totalSupply: new anchor.BN(tokenTotalSupply.toString()),
-          },
-          treasuryAccount,
-          rewardTreasuryAccount
+          }
       )
         .accounts(initCtx)
         .signers([mintSig, sig])
@@ -151,8 +132,6 @@ describe("tax-token", () => {
       assert.equal(state.authority.toString(), authority.publicKey.toString());
       assert.equal(state.tokenMint.toString(), tokenMint.toString());
       assert.equal(state.rewardMint.toString(), rewardMint.toString());
-      assert.equal(state.treasury.toString(), treasuryAccount.toString());
-      assert.equal(state.rewardTreasury.toString(), rewardTreasuryAccount.toString());
       
       console.log("✅ Test passed - Tax token initialized successfully!");
     } catch (err) {
@@ -251,5 +230,23 @@ describe("tax-token", () => {
       .rpc({ skipPreflight: true });
     console.log('Your transaction signature', transactionSignature);
     console.log("✅ Update passed - Token tax fee updated successfully!");
+  });
+
+  it('Update Program state', async () => {
+    const newAuthority = Keypair.generate().publicKey;
+    const rewardMint = Keypair.generate().publicKey;
+
+    const transactionSignature = await program.methods
+      .updateProgramState(newAuthority, rewardMint)
+      .accounts(
+        { 
+          state: statePda,
+          authority: authority.publicKey,
+        }
+      )
+      .signers([sig])
+      .rpc({ skipPreflight: true });
+    console.log('Your transaction signature', transactionSignature);
+    console.log("✅ Update passed - Program state updated successfully!");
   });
 });

@@ -1,12 +1,16 @@
 {
   "license": "ISC",
+  "type": "module",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
-    "@solana/spl-token": "^0.4.12"
+    "@raydium-io/raydium-sdk-v2": "^0.1.115-alpha",
+    "@solana/spl-token": "^0.4.12",
+    "@solana/spl-token-swap": "^0.4.4",
+    "decimal.js": "^10.5.0"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",
