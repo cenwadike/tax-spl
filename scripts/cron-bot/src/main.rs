@@ -22,64 +22,6 @@ use std::sync::Arc;
 use std::{env, str::FromStr, time::Duration};
 use tokio::time::interval;
 
-// Constants
-/// Metaplex Token Metadata Program ID for fetching token metadata
-const METAPLEX_METADATA_PROGRAM_ID: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
-
-// Structs
-/// Represents token metadata fetched from the Metaplex Metadata Program
-#[derive(Debug)]
-struct TokenMetadata {
-    _name: String,  // Full name of the token
-    symbol: String, // Token ticker symbol
-}
-
-/// Fetches token metadata from the Metaplex Metadata Program
-///
-/// # Arguments
-/// * `rpc_client` - The RPC client for interacting with the Solana network
-/// * `mint` - The public key of the token mint to fetch metadata for
-///
-/// # Returns
-/// A `Result` containing `TokenMetadata` with the token's name and symbol, or an error if fetching fails
-///
-/// # Errors
-/// Returns an error if the account data cannot be fetched or parsed correctly
-async fn fetch_token_metadata(
-    rpc_client: &RpcClient,
-    mint: &Pubkey,
-) -> Result<TokenMetadata, anyhow::Error> {
-    let metadata_program = Pubkey::from_str(METAPLEX_METADATA_PROGRAM_ID)?;
-
-    // Derive the Program Derived Address (PDA) for the token's metadata
-    let (metadata_pda, _) = Pubkey::find_program_address(
-        &[b"metadata", metadata_program.as_ref(), mint.as_ref()],
-        &metadata_program,
-    );
-
-    let account = rpc_client.get_account(&metadata_pda).await?;
-
-    // Metadata layout: 1 byte (update auth flag) + 32 bytes (update auth) + 32 bytes (mint) + data
-    let data = &account.data[65..]; // Offset where variable-length data starts
-
-    // Extract name: 4 bytes (length) + string
-    let name_length = u32::from_le_bytes(data[0..4].try_into()?) as usize;
-    let _name = String::from_utf8(data[4..4 + name_length].to_vec())?
-        .trim_end_matches(char::from(0))
-        .to_string();
-
-    // Extract symbol: 4 bytes (length) + string
-    let symbol_offset = 4 + name_length;
-    let symbol_length =
-        u32::from_le_bytes(data[symbol_offset..symbol_offset + 4].try_into()?) as usize;
-    let symbol =
-        String::from_utf8(data[symbol_offset + 4..symbol_offset + 4 + symbol_length].to_vec())?
-            .trim_end_matches(char::from(0))
-            .to_string();
-
-    Ok(TokenMetadata { _name, symbol })
-}
-
 /// Fetches a swap quote from Raydium pools using pool data and RPC client
 ///
 /// # Arguments
@@ -182,7 +124,7 @@ async fn main() {
 
     let raydium_data = fetch_raydium_pools(&raydium_endpoint)
         .await
-        .expect("Failed to fetch Raydium pools");
+        .expect("Failed to fetch or simulate Raydium pools");
 
     let interval_secs = env::var("INTERVAL")
         .unwrap_or("3600".to_string())
@@ -190,7 +132,7 @@ async fn main() {
         .expect("Failed to parse INTERVAL");
     let mut interval = interval(Duration::from_secs(interval_secs));
 
-    println!("Raydium data: {}", raydium_data);
+    println!("Using Raydium data: {}", raydium_data);
     loop {
         interval.tick().await;
         match process_job(
@@ -207,7 +149,7 @@ async fn main() {
     }
 }
 
-/// Fetches Raydium pool data from the specified endpoint
+/// Fetches Raydium pool data (hardcoded fallback if API fails)
 ///
 /// # Arguments
 /// * `endpoint` - The URL of the Raydium liquidity endpoint
@@ -220,10 +162,49 @@ async fn fetch_raydium_pools(endpoint: &str) -> Result<Value, anyhow::Error> {
         .get(endpoint)
         .timeout(Duration::from_secs(10))
         .send()
-        .await?
-        .json::<Value>()
-        .await?;
-    Ok(response)
+        .await;
+
+    match response {
+        Ok(resp) => {
+            let json = resp.json::<Value>().await?;
+            if json.get("success").and_then(|s| s.as_bool()) == Some(false) {
+                println!("Raydium API returned failure for Devnet: {:?}", json);
+                // Fallback to hardcoded Devnet pool
+                Ok(hardcoded_devnet_pool())
+            } else {
+                Ok(json)
+            }
+        }
+        Err(e) => {
+            println!(
+                "Failed to fetch Raydium pools from API: {:?}, using hardcoded fallback",
+                e
+            );
+            Ok(hardcoded_devnet_pool())
+        }
+    }
+}
+
+/// Returns a hardcoded Devnet pool configuration for testing
+fn hardcoded_devnet_pool() -> Value {
+    // Devnet token mints
+    let token_mint = "So11111111111111111111111111111111111111112".to_string(); // WSOL
+    let reward_token_mint = "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG1NfTamcPump".to_string(); // Devnet USDC
+
+    // Simulated pool data (replace with real values if you create a pool)
+    serde_json::json!({
+        "official": [
+            {
+                "id": "8gM8KvrL9sPbrgmMgUq3uKz7FMsMZ4sM7kW4B9QN4mEh", // Simulated pool ID
+                "baseMint": token_mint, // WSOL
+                "quoteMint": reward_token_mint, // USDC
+                "baseVault": "6sQdN9G8gnyjF5s6tY4LhW8gXzF8XvL6zG5K9vX8QwQJ", // Simulated base vault
+                "quoteVault": "4vN8sX8gY8zF8XvL6zG5K9vX8QwQJ6sQdN9G8gnyjF5s", // Simulated quote vault
+                "tickArrayLower": "3tB5sX8gY8zF8XvL6zG5K9vX8QwQJ6sQdN9G8gnyjF5s", // Simulated tick array lower
+                "configId": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1" // Default AMM config used on Mainnet
+            }
+        ]
+    })
 }
 
 /// Processes the main job: harvests taxes, swaps tokens, and distributes rewards
@@ -249,7 +230,15 @@ async fn process_job(
     );
     let token_mint = Pubkey::from_str(token_mint_address)?;
 
-    let tax_program_id = Pubkey::from_str("YOUR_TAX_PROGRAM_ID_HERE")?;
+    // Load the desired reward token mint from environment variable
+    let reward_token_mint_address = env::var("REWARD_TOKEN_MINT")
+        .expect("REWARD_TOKEN_MINT must be set in environment variables");
+    let reward_token_mint = Pubkey::from_str(&reward_token_mint_address)?;
+
+    let tax_program_id = env::var("TAX_PROGRAM_ID_HERE")
+        .expect("TAX_PROGRAM_ID_HERE must be set in environment variables");
+    let tax_program_id = Pubkey::from_str(&tax_program_id)?;
+
     let raydium_clmm_id = Pubkey::from_str("CLMM9tUoggJu2wam25TCwC6eWkw1mnbn7nryKyswgTNB")?;
     let token_program_id = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")?;
     let token_2022_program_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")?;
@@ -296,18 +285,24 @@ async fn process_job(
         return Ok(());
     }
 
+    // Find the specific pair between token_mint and reward_token_mint
     let default_vec = Vec::<Value>::new();
     let pools = raydium_data["official"]
         .as_array()
         .unwrap_or(&default_vec)
         .iter()
         .find(|pool| {
-            pool["baseMint"].as_str() == Some(token_mint_address)
-                || pool["quoteMint"].as_str() == Some(token_mint_address)
+            let base_mint = pool["baseMint"].as_str();
+            let quote_mint = pool["quoteMint"].as_str();
+            (base_mint == Some(token_mint_address)
+                && quote_mint == Some(&reward_token_mint_address))
+                || (base_mint == Some(&reward_token_mint_address)
+                    && quote_mint == Some(token_mint_address))
         })
         .ok_or(anyhow::anyhow!(
-            "No suitable pool found for token: {}",
-            token_mint_address
+            "No pool found for pair {} and {}",
+            token_mint_address,
+            reward_token_mint_address
         ))?;
 
     let pool_id = Pubkey::from_str(pools["id"].as_str().unwrap_or(""))?;
@@ -322,33 +317,18 @@ async fn process_job(
             .unwrap_or("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"),
     )?;
 
-    let base_metadata = fetch_token_metadata(&rpc_client, &base_mint).await?;
-    let quote_metadata = fetch_token_metadata(&rpc_client, &quote_mint).await?;
-
-    let (input_token, output_token, _is_input_2022, _in_token_symbol, _out_token_symbol) =
+    let (input_token, _output_token, _is_input_2022) =
         if pools["baseMint"].as_str() == Some(token_mint_address) {
-            (
-                token_mint,
-                quote_mint,
-                is_token_2022,
-                base_metadata.symbol.clone(),
-                quote_metadata.symbol.clone(),
-            )
+            (token_mint, reward_token_mint, is_token_2022)
         } else {
-            (
-                base_mint,
-                token_mint,
-                false,
-                base_metadata.symbol.clone(),
-                quote_metadata.symbol.clone(),
-            )
+            (reward_token_mint, token_mint, false)
         };
 
     let (output_ata, _) = Pubkey::find_program_address(
         &[
             payer.pubkey().as_ref(),
             token_program_id.as_ref(),
-            output_token.as_ref(),
+            reward_token_mint.as_ref(), // Always use reward_token_mint for output ATA
         ],
         &ata_program_id,
     );
@@ -360,7 +340,7 @@ async fn process_job(
         &rpc_client,
         raydium_data,
         &input_token,
-        &output_token,
+        &reward_token_mint, // Specify reward_token_mint explicitly
         amount_in,
         slippage_tolerance,
     )
@@ -395,10 +375,10 @@ async fn process_job(
         .unwrap_or(0.0) as u64;
 
     distribute_rewards(
-        rpc_client, // Pass owned value
-        client,     // Pass owned value
+        rpc_client,
+        client,
         &token_mint,
-        &output_token,
+        &reward_token_mint, // Pass the specific reward token
         reward_balance,
         &payer,
         token_program_id,

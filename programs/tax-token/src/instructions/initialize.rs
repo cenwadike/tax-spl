@@ -23,14 +23,13 @@ use anchor_spl::{
 use crate::{InitTokenParams, ProgramState, TAX_BASIS_POINT};
 
 pub fn process_initialize(ctx: Context<Initialize>, params: InitTokenParams) -> Result<()> {
-    msg!("Initializing SPL token with 6% tax");
+    msg!("Initializing SPL token with 10% tax");
 
     // Initialize the program state
     let state = &mut ctx.accounts.state;
     state.authority = ctx.accounts.authority.key();
     state.token_mint = ctx.accounts.token_mint.key();
     state.reward_mint = ctx.accounts.reward_mint.key();
-    state.last_distribution_time = Clock::get()?.unix_timestamp;
 
     // Calculate space required for mint and extension data
     let mint_size =
@@ -84,7 +83,7 @@ pub fn process_initialize(ctx: Context<Initialize>, params: InitTokenParams) -> 
 
     ctx.accounts.check_mint_data()?;
 
-    msg!("SPL token with 6% tax initialized successfully");
+    msg!("SPL token with 10% tax initialized successfully");
 
     Ok(())
 }

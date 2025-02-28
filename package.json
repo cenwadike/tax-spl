@@ -1,16 +1,19 @@
 {
   "license": "ISC",
-  "type": "module",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "create-clmm-pool": "npx ts-node scripts/setup-amm/create-clmm-pool.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
-    "@raydium-io/raydium-sdk-v2": "^0.1.115-alpha",
+    "@raydium-io/raydium-sdk": "1.3.1-beta.51",
     "@solana/spl-token": "^0.4.12",
     "@solana/spl-token-swap": "^0.4.4",
-    "decimal.js": "^10.5.0"
+    "@solana/web3.js": "^1.98.0",
+    "bn.js": "^5.2.1",
+    "decimal.js": "^10.5.0",
+    "dotenv": "^16.4.7"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",

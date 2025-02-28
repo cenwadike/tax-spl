@@ -7,7 +7,7 @@ use instructions::*;
 
 declare_id!("6wgDw4z2yv7eqJnuvZFgyGE3m4pVGnd77pGsjPdc6z8B");
 
-const TAX_BASIS_POINT: u16 = 600; // 6%
+const TAX_BASIS_POINT: u16 = 1000; // 10%
 
 #[program]
 pub mod tax_token {
@@ -51,15 +51,13 @@ pub struct ProgramState {
     pub authority: Pubkey,
     pub token_mint: Pubkey,
     pub reward_mint: Pubkey,
-    pub last_distribution_time: i64,
 }
 
 impl ProgramState {
     pub const LEN: usize = 8 + // discriminator
         32 + // authority
         32 + // token_mint
-        32 + // reward_mint
-        8; // last_distribution_time
+        32; // reward_mint
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Debug, Clone)]

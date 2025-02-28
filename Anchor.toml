@@ -12,7 +12,8 @@ tax_token = "6wgDw4z2yv7eqJnuvZFgyGE3m4pVGnd77pGsjPdc6z8B"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+# cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
