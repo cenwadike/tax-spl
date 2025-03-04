@@ -1201,10 +1201,13 @@ dependencies = [
  "anchor-client",
  "anchor-lang",
  "anyhow",
+ "borsh 1.5.5",
  "chrono",
  "dotenv",
  "futures",
+ "raydium-cp-swap",
  "reqwest",
+ "serde",
  "serde_json",
  "solana-account-decoder",
  "solana-sdk",
@@ -1905,6 +1908,12 @@ name = "hermit-abi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "histogram"
@@ -3157,6 +3166,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
 dependencies = [
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "raydium-cp-swap"
+version = "0.1.1392"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf40f2704e0935f14e5b85d65c804d5e4099ad012e664ad03e902224c7726a2"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "arrayref",
+ "bytemuck",
+ "mpl-token-metadata",
+ "num-traits",
+ "solana-security-txt",
+ "spl-math 0.2.0",
+ "spl-memo",
+ "spl-token 4.0.0",
+ "spl-token-2022 3.0.5",
+ "uint 0.9.5",
 ]
 
 [[package]]
@@ -4574,7 +4603,21 @@ dependencies = [
  "num-traits",
  "solana-program",
  "thiserror",
- "uint",
+ "uint 0.8.5",
+]
+
+[[package]]
+name = "spl-math"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "102d87a7608c793497fa3e85e9d0e24a33be06a94fb029b2cd30d794295f8110"
+dependencies = [
+ "borsh 0.10.4",
+ "num-derive 0.3.3",
+ "num-traits",
+ "solana-program",
+ "thiserror",
+ "uint 0.9.5",
 ]
 
 [[package]]
@@ -4833,7 +4876,7 @@ dependencies = [
  "num-derive 0.3.3",
  "num-traits",
  "solana-program",
- "spl-math",
+ "spl-math 0.1.0",
  "spl-token 3.5.0",
  "thiserror",
 ]
@@ -5010,6 +5053,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "spl-token-metadata-interface 0.3.5",
 ]
 
 [[package]]
@@ -5377,6 +5421,18 @@ dependencies = [
  "byteorder",
  "crunchy",
  "rustc-hex",
+ "static_assertions",
+]
+
+[[package]]
+name = "uint"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76f64bba2c53b04fcab63c01a7d7427eadc821e3bc48c34dc9ba29c501164b52"
+dependencies = [
+ "byteorder",
+ "crunchy",
+ "hex",
  "static_assertions",
 ]
 

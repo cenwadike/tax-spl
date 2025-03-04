@@ -12,6 +12,7 @@
     "@solana/spl-token-swap": "^0.4.4",
     "@solana/web3.js": "^1.98.0",
     "bn.js": "^5.2.1",
+    "bs58": "^6.0.0",
     "decimal.js": "^10.5.0",
     "dotenv": "^16.4.7"
   },

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021" 
 
 [dependencies]
-anchor-client = "0.30.1"
+anchor-client = { version = "0.30.1", features = ["async"] }
 anchor-lang = "0.30.1"
 solana-sdk = "1.17.3" 
 tokio = { version = "1.36.0", features = ["full"] }
@@ -18,3 +18,6 @@ spl-token = "4.0.0"
 spl-associated-token-account = "2.0.0"  
 futures = "0.3"
 solana-account-decoder = "1.17.3" 
+serde = "1.0.218"
+raydium-cp-swap = "0.1.1392"
+borsh = "1.5.5"

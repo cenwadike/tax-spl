@@ -2,12 +2,28 @@
 
 This document provides detailed instructions on how to deploy and run the `tax_token` system, 
 which consists of an on-chain Solana Anchor program and an off-chain Rust script. The on-chain 
-program implements a Token-2022 with a transfer fee extension (6% tax), while the off-chain 
+program implements a Token-2022 with a transfer fee extension (10% tax), while the off-chain 
 script (`cron-bot`) periodically harvests the tax, swaps it using Raydium CLMM pools, and 
 distributes rewards to token holders every hour.
 
+## Design
 
-- **On-Chain (tax_token)**: A Solana Anchor program that creates a Token-2022 with a 6% transfer fee. The tax is collected in the mint account and can be harvested/withdrawn by the authority.
+```
+graph TD
+    A[User Transfers Token-2022] -->|10% Tax| B(Token Mint)
+    B -->|Harvest Tax| C(Cron Bot)
+    C -->|Swap on Raydium CLMM| D(Reward Token)
+    D -->|Distribute Rewards| E(Token Holders)
+    subgraph On-Chain
+        A
+        B
+    end
+    subgraph Off-Chain
+        C
+    end
+```
+
+- **On-Chain (tax_token)**: A Solana Anchor program that creates a Token-2022 with a 10% transfer fee. The tax is collected in the mint account and can be harvested/withdrawn by the authority.
 
 - **Off-Chain (cron-bot)**: A Rust script running in a Docker container that:
 Harvests the tax from the mint account.

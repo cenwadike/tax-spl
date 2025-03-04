@@ -1,13 +1,12 @@
+use anchor_client::solana_client;
+use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
+use anchor_client::solana_client::rpc_request::RpcResponseErrorData;
+use anchor_client::solana_sdk::hash::Hash;
 use anchor_client::{
-    solana_client::{
-        nonblocking::rpc_client::RpcClient,
-        rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-        rpc_filter::{Memcmp, RpcFilterType},
-    },
+    solana_client::nonblocking::rpc_client::RpcClient,
     solana_sdk::{
         commitment_config::CommitmentConfig,
         instruction::Instruction,
-        program_pack::Pack,
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         signer::Signer,
@@ -15,79 +14,18 @@ use anchor_client::{
     Client, Cluster, Program,
 };
 use anchor_lang::prelude::AccountMeta;
+use anyhow::anyhow;
+use borsh::{BorshDeserialize, BorshSerialize};
 use dotenv::dotenv;
-use futures::future::join_all;
-use serde_json::Value;
+use solana_sdk::commitment_config::CommitmentLevel;
+use solana_sdk::message::Message;
+use solana_sdk::transaction::Transaction;
 use std::sync::Arc;
-use std::{env, str::FromStr, time::Duration};
-use tokio::time::interval;
+use std::{env, str::FromStr, thread, time::Duration};
+use tokio;
+use utils::{get_discriminant, get_token_accounts};
 
-/// Fetches a swap quote from Raydium pools using pool data and RPC client
-///
-/// # Arguments
-/// * `rpc_client` - The Solana RPC client
-/// * `pools` - Raydium pool data from the SDK
-/// * `in_token` - Public key of the input token mint
-/// * `out_token` - Public key of the output token mint
-/// * `in_amount` - Amount of input tokens to swap
-/// * `slippage` - Acceptable slippage percentage (e.g., 0.25 for 25%)
-///
-/// # Returns
-/// A `Result` containing the estimated output amount in tokens, or an error if the calculation fails
-async fn fetch_raydium_quote(
-    rpc_client: &RpcClient,
-    pools: &Value,
-    in_token: &Pubkey,
-    out_token: &Pubkey,
-    in_amount: u64,
-    slippage: f64,
-) -> Result<u64, anyhow::Error> {
-    let default_vec = Vec::<Value>::new();
-    let pool = pools["official"]
-        .as_array()
-        .unwrap_or(&default_vec)
-        .iter()
-        .find(|pool| {
-            let base_mint = pool["baseMint"].as_str();
-            let quote_mint = pool["quoteMint"].as_str();
-            (base_mint == Some(&in_token.to_string()) && quote_mint == Some(&out_token.to_string()))
-                || (base_mint == Some(&out_token.to_string())
-                    && quote_mint == Some(&in_token.to_string()))
-        })
-        .ok_or(anyhow::anyhow!("No suitable pool found for tokens"))?;
-
-    // Simplified estimation using pool reserves (this assumes CLMM pool structure)
-    let base_vault = Pubkey::from_str(pool["baseVault"].as_str().unwrap_or(""))?;
-    let quote_vault = Pubkey::from_str(pool["quoteVault"].as_str().unwrap_or(""))?;
-
-    let base_balance = rpc_client
-        .get_token_account_balance(&base_vault)
-        .await?
-        .amount
-        .parse::<u64>()?;
-    let quote_balance = rpc_client
-        .get_token_account_balance(&quote_vault)
-        .await?
-        .amount
-        .parse::<u64>()?;
-
-    // Determine direction and calculate quote
-    let (reserve_in, reserve_out) = if pool["baseMint"].as_str() == Some(&in_token.to_string()) {
-        (base_balance, quote_balance)
-    } else {
-        (quote_balance, base_balance)
-    };
-
-    // Simple constant product formula (x * y = k) without fees for estimation
-    // Actual Raydium CLMM uses more complex logic with ticks, but this is a basic approximation
-    let amount_out =
-        (in_amount as u128 * reserve_out as u128 / (reserve_in as u128 + in_amount as u128)) as u64;
-
-    // Apply slippage
-    let amount_out_with_slippage = (amount_out as f64 * (1.0 - slippage)) as u64;
-
-    Ok(amount_out_with_slippage)
-}
+mod utils;
 
 /// Main entry point for the token tax and distribution cron bot
 ///
@@ -102,126 +40,68 @@ async fn main() {
 
     let sol_admin_private_key =
         env::var("SOLANA_ADMIN_PRIVATE_KEY").expect("SOLANA_ADMIN_PRIVATE_KEY must be set");
+
+    let tax_program_id =
+        env::var("TAX_PROGRAM_ID").expect("TAX_PROGRAM_ID must be set in environment variables");
     let mint_address = env::var("TOKEN_MINT").expect("TOKEN_MINT must be set");
+    let reward_token_mint_address = env::var("REWARD_TOKEN_MINT")
+        .expect("REWARD_TOKEN_MINT must be set in environment variables");
+
+    let pool_id = env::var("POOL_ID").expect("POOL_ID must be set");
+    let base_vault = env::var("BASE_VAULT").expect("BASE_VAULT must be set");
+    let quote_vault = env::var("QUOTE_VAULT").expect("QUOTE_VAULT must be set");
+    let amm_config = env::var("AMM_CONFIG").expect("AMM_CONFIG must be set");
 
     let cluster = env::var("SOLANA_NETWORK")
         .unwrap_or("mainnet".to_string())
         .to_lowercase();
-    let (rpc_url, raydium_endpoint) = match cluster.as_str() {
-        "devnet" => (
-            "https://api.devnet.solana.com".to_string(),
-            "https://api.raydium.io/v2/sdk/liquidity/devnet.json".to_string(),
-        ),
-        "mainnet" => (
-            "https://api.mainnet-beta.solana.com".to_string(),
-            "https://api.raydium.io/v2/sdk/liquidity/mainnet.json".to_string(),
-        ),
-        custom => (
-            custom.to_string(),
-            "https://api.raydium.io/v2/sdk/liquidity/mainnet.json".to_string(),
-        ),
+    let rpc_url = match cluster.as_str() {
+        "devnet" => "https://api.devnet.solana.com".to_string(),
+        "mainnet" => "https://api.mainnet-beta.solana.com".to_string(),
+        custom => custom.to_string(),
     };
-
-    let raydium_data = fetch_raydium_pools(&raydium_endpoint)
-        .await
-        .expect("Failed to fetch or simulate Raydium pools");
 
     let interval_secs = env::var("INTERVAL")
         .unwrap_or("3600".to_string())
         .parse::<u64>()
         .expect("Failed to parse INTERVAL");
-    let mut interval = interval(Duration::from_secs(interval_secs));
 
-    println!("Using Raydium data: {}", raydium_data);
     loop {
-        interval.tick().await;
         match process_job(
             &rpc_url,
             &sol_admin_private_key,
+            &tax_program_id,
             &mint_address,
-            &raydium_data,
+            &reward_token_mint_address,
+            &base_vault,
+            &quote_vault,
+            &pool_id,
+            &amm_config,
         )
         .await
         {
             Ok(()) => println!("Job completed at {}", chrono::Utc::now()),
             Err(e) => eprintln!("Job failed at {}: {:?}", chrono::Utc::now(), e),
         }
+        thread::sleep(Duration::from_secs(interval_secs));
     }
-}
-
-/// Fetches Raydium pool data (hardcoded fallback if API fails)
-///
-/// # Arguments
-/// * `endpoint` - The URL of the Raydium liquidity endpoint
-///
-/// # Returns
-/// A `Result` containing the JSON data of Raydium pools, or an error if the request fails
-async fn fetch_raydium_pools(endpoint: &str) -> Result<Value, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(endpoint)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await;
-
-    match response {
-        Ok(resp) => {
-            let json = resp.json::<Value>().await?;
-            if json.get("success").and_then(|s| s.as_bool()) == Some(false) {
-                println!("Raydium API returned failure for Devnet: {:?}", json);
-                // Fallback to hardcoded Devnet pool
-                Ok(hardcoded_devnet_pool())
-            } else {
-                Ok(json)
-            }
-        }
-        Err(e) => {
-            println!(
-                "Failed to fetch Raydium pools from API: {:?}, using hardcoded fallback",
-                e
-            );
-            Ok(hardcoded_devnet_pool())
-        }
-    }
-}
-
-/// Returns a hardcoded Devnet pool configuration for testing
-fn hardcoded_devnet_pool() -> Value {
-    // Devnet token mints
-    let token_mint = "So11111111111111111111111111111111111111112".to_string(); // WSOL
-    let reward_token_mint = "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG1NfTamcPump".to_string(); // Devnet USDC
-
-    // Simulated pool data (replace with real values if you create a pool)
-    serde_json::json!({
-        "official": [
-            {
-                "id": "8gM8KvrL9sPbrgmMgUq3uKz7FMsMZ4sM7kW4B9QN4mEh", // Simulated pool ID
-                "baseMint": token_mint, // WSOL
-                "quoteMint": reward_token_mint, // USDC
-                "baseVault": "6sQdN9G8gnyjF5s6tY4LhW8gXzF8XvL6zG5K9vX8QwQJ", // Simulated base vault
-                "quoteVault": "4vN8sX8gY8zF8XvL6zG5K9vX8QwQJ6sQdN9G8gnyjF5s", // Simulated quote vault
-                "tickArrayLower": "3tB5sX8gY8zF8XvL6zG5K9vX8QwQJ6sQdN9G8gnyjF5s", // Simulated tick array lower
-                "configId": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1" // Default AMM config used on Mainnet
-            }
-        ]
-    })
 }
 
 /// Processes the main job: harvests taxes, swaps tokens, and distributes rewards
 ///
-/// # Arguments
-/// * `sol_rpc_endpoint` - The Solana RPC endpoint URL
-/// * `sol_admin_private_key` - The admin's private key in base58 format
-/// * `token_mint_address` - The address of the token mint
-/// * `raydium_data` - Raydium pool data fetched from the API
-///
+
 /// # Returns
 /// A `Result` indicating success or an error if any step fails
 async fn process_job(
-    sol_rpc_endpoint: &String,
-    sol_admin_private_key: &String,
-    token_mint_address: &String,
-    raydium_data: &Value,
+    sol_rpc_endpoint: &str,
+    sol_admin_private_key: &str,
+    tax_program_id: &str,
+    token_mint_address: &str,
+    reward_token_mint_address: &str,
+    base_vault: &str,
+    quote_vault: &str,
+    pool_id: &str,
+    amm_config: &str,
 ) -> Result<(), anyhow::Error> {
     let payer = Keypair::from_base58_string(sol_admin_private_key);
     let client = Client::new(
@@ -230,28 +110,29 @@ async fn process_job(
     );
     let token_mint = Pubkey::from_str(token_mint_address)?;
 
-    // Load the desired reward token mint from environment variable
-    let reward_token_mint_address = env::var("REWARD_TOKEN_MINT")
-        .expect("REWARD_TOKEN_MINT must be set in environment variables");
     let reward_token_mint = Pubkey::from_str(&reward_token_mint_address)?;
 
-    let tax_program_id = env::var("TAX_PROGRAM_ID_HERE")
-        .expect("TAX_PROGRAM_ID_HERE must be set in environment variables");
     let tax_program_id = Pubkey::from_str(&tax_program_id)?;
 
-    let raydium_clmm_id = Pubkey::from_str("CLMM9tUoggJu2wam25TCwC6eWkw1mnbn7nryKyswgTNB")?;
+    let raydium_clmm_id = Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")?;
     let token_program_id = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")?;
     let token_2022_program_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")?;
     let ata_program_id = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")?;
-    let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")?;
+    let system_program_id = Pubkey::from_str("11111111111111111111111111111111")?;
 
     let tax_program = client.program(tax_program_id)?;
     let clmm_program = client.program(raydium_clmm_id)?;
 
+    let base_vault = Pubkey::from_str(base_vault)?;
+    let quote_vault = Pubkey::from_str(quote_vault)?;
+
+    let pool_id = Pubkey::from_str(pool_id)?;
+    let amm_config = Pubkey::from_str(amm_config)?;
+
     let (admin_ata, _) = Pubkey::find_program_address(
         &[
             payer.pubkey().as_ref(),
-            token_program_id.as_ref(),
+            token_2022_program_id.as_ref(),
             token_mint.as_ref(),
         ],
         &ata_program_id,
@@ -260,10 +141,34 @@ async fn process_job(
     let rpc_client =
         RpcClient::new_with_commitment(sol_rpc_endpoint.to_string(), CommitmentConfig::confirmed());
 
-    let token_account = rpc_client.get_account(&token_mint).await?;
-    let is_token_2022 = token_account.owner == token_2022_program_id;
+    let pre_harvested_balance = rpc_client
+        .get_token_account_balance(&admin_ata)
+        .await?
+        .ui_amount
+        .expect("Failed to parse balance") as u64;
+    println!("Pre-harvest balance: {}", pre_harvested_balance);
 
-    harvest(&tax_program, &token_mint, &token_2022_program_id, &payer).await?;
+    let holders = get_token_accounts(&token_mint, None, 1, 1000, None, None, None, false).await;
+    if holders.is_err() {
+        return Err(anyhow!("Failed to get holders for harvesting"));
+    }
+    let holders = holders.unwrap();
+    let token_accounts: Vec<Pubkey> = holders
+        .into_iter()
+        .map(|(account, _)| Pubkey::from_str(&account))
+        .collect::<Result<Vec<_>, _>>()?;
+    for chunk in token_accounts.chunks(20) {
+        // Batch into groups of 20
+        harvest(
+            &tax_program,
+            &token_mint,
+            chunk.to_vec(),
+            &token_2022_program_id,
+            &payer,
+        )
+        .await?;
+    }
+
     withdraw(
         &tax_program,
         &token_mint,
@@ -274,82 +179,86 @@ async fn process_job(
     )
     .await?;
 
-    let harvested_amount = rpc_client
+    let post_harvested_balance = rpc_client
         .get_token_account_balance(&admin_ata)
         .await?
         .ui_amount
-        .unwrap_or(0.0) as u64;
+        .expect("Failed to parse balance") as u64;
+
+    println!("Post-harvest balance: {}", post_harvested_balance);
+
+    let harvested_amount = post_harvested_balance - pre_harvested_balance;
+
+    println!("Harvested amount: {}", harvested_amount);
 
     if harvested_amount == 0 {
         println!("No tokens harvested, skipping swap and distribution");
         return Ok(());
     }
 
-    // Find the specific pair between token_mint and reward_token_mint
-    let default_vec = Vec::<Value>::new();
-    let pools = raydium_data["official"]
-        .as_array()
-        .unwrap_or(&default_vec)
-        .iter()
-        .find(|pool| {
-            let base_mint = pool["baseMint"].as_str();
-            let quote_mint = pool["quoteMint"].as_str();
-            (base_mint == Some(token_mint_address)
-                && quote_mint == Some(&reward_token_mint_address))
-                || (base_mint == Some(&reward_token_mint_address)
-                    && quote_mint == Some(token_mint_address))
-        })
-        .ok_or(anyhow::anyhow!(
-            "No pool found for pair {} and {}",
-            token_mint_address,
-            reward_token_mint_address
-        ))?;
-
-    let pool_id = Pubkey::from_str(pools["id"].as_str().unwrap_or(""))?;
-    let base_vault = Pubkey::from_str(pools["baseVault"].as_str().unwrap_or(""))?;
-    let quote_vault = Pubkey::from_str(pools["quoteVault"].as_str().unwrap_or(""))?;
-    let tick_array_lower = Pubkey::from_str(pools["tickArrayLower"].as_str().unwrap_or(""))?;
-    let base_mint = Pubkey::from_str(pools["baseMint"].as_str().unwrap_or(""))?;
-    let quote_mint = Pubkey::from_str(pools["quoteMint"].as_str().unwrap_or(""))?;
-    let amm_config = Pubkey::from_str(
-        pools["configId"]
-            .as_str()
-            .unwrap_or("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"),
-    )?;
-
-    let (input_token, _output_token, _is_input_2022) =
-        if pools["baseMint"].as_str() == Some(token_mint_address) {
-            (token_mint, reward_token_mint, is_token_2022)
-        } else {
-            (reward_token_mint, token_mint, false)
-        };
-
+    // derive reward token ata
     let (output_ata, _) = Pubkey::find_program_address(
         &[
             payer.pubkey().as_ref(),
             token_program_id.as_ref(),
-            reward_token_mint.as_ref(), // Always use reward_token_mint for output ATA
+            reward_token_mint.as_ref(),
         ],
         &ata_program_id,
     );
 
+    // check if derived account has been created
+    let output_account = rpc_client.get_account(&output_ata).await;
+
+    // create destination ATA if it does not exist
+    if output_account.is_err() {
+        let recent_blockhash = rpc_client.get_latest_blockhash().await;
+        let mut latest_blockhash = Hash::default();
+        match recent_blockhash {
+            Ok(hash) => {
+                latest_blockhash = hash;
+            }
+            Err(err) => {
+                eprintln!("Failed to Get Recent Hash. {}", err)
+            }
+        }
+
+        // construct create destination ATA instruction
+        let create_destination_ata_ix = Instruction {
+            program_id: ata_program_id.clone(),
+            accounts: vec![
+                AccountMeta::new(payer.pubkey().clone(), true),
+                AccountMeta::new(output_ata, false),
+                AccountMeta::new_readonly(payer.pubkey().clone(), false),
+                AccountMeta::new_readonly(reward_token_mint.clone(), false),
+                AccountMeta::new_readonly(system_program_id.clone(), false),
+                AccountMeta::new_readonly(token_program_id.clone(), false),
+            ],
+            data: vec![0],
+        };
+
+        // create create destination ATA transaction
+        let mut transaction =
+            Transaction::new_with_payer(&[create_destination_ata_ix], Some(&payer.pubkey()));
+
+        // sign create destination ATA transaction
+        transaction.sign(&[&payer], latest_blockhash);
+
+        // send and confirm transaction
+        match rpc_client.send_and_confirm_transaction(&transaction).await {
+            Ok(signature) => {
+                println!("Created associated token account. Tx Hash: {}", signature);
+            }
+            Err(err) => {
+                eprintln!("Failed to create associated token account. {}", err);
+            }
+        }
+    }
+
     let amount_in = harvested_amount;
-    let slippage_tolerance = 0.25; // 25% slippage tolerance
-
-    let quoted_amount_out = fetch_raydium_quote(
-        &rpc_client,
-        raydium_data,
-        &input_token,
-        &reward_token_mint, // Specify reward_token_mint explicitly
-        amount_in,
-        slippage_tolerance,
-    )
-    .await?;
-
-    let amount_out_minimum = (quoted_amount_out as f64 * (1.0 - slippage_tolerance)) as u64;
 
     swap_clmm(
-        &clmm_program,
+        &rpc_client,
+        &clmm_program.id(),
         &payer,
         pool_id,
         amm_config,
@@ -357,17 +266,13 @@ async fn process_job(
         output_ata,
         base_vault,
         quote_vault,
-        tick_array_lower,
-        base_mint,
-        quote_mint,
-        token_program_id,
+        token_mint,
+        reward_token_mint,
         token_2022_program_id,
-        memo_program_id,
+        token_program_id,
         amount_in,
-        amount_out_minimum,
     )
     .await?;
-
     let reward_balance = rpc_client
         .get_token_account_balance(&output_ata)
         .await?
@@ -378,7 +283,7 @@ async fn process_job(
         rpc_client,
         client,
         &token_mint,
-        &reward_token_mint, // Pass the specific reward token
+        &reward_token_mint,
         reward_balance,
         &payer,
         token_program_id,
@@ -386,6 +291,17 @@ async fn process_job(
         ata_program_id,
     )
     .await?;
+
+    // distribute_tokens(
+    //     rpc_client,
+    //     client,
+    //     &token_mint,
+    //     reward_balance,
+    //     &payer,
+    //     &admin_ata,
+    //     token_2022_program_id,
+    // )
+    // .await?;
 
     Ok(())
 }
@@ -403,32 +319,39 @@ async fn process_job(
 async fn harvest(
     program: &Program<Arc<Keypair>>,
     mint_account: &Pubkey,
+    token_accounts: Vec<Pubkey>,
     token_2022_program_id: &Pubkey,
     keypair: &Keypair,
 ) -> Result<Signature, anyhow::Error> {
+    println!("Starting Harvest...");
+
+    let remaining_accounts: Vec<AccountMeta> = token_accounts
+        .into_iter()
+        .map(|pubkey| AccountMeta {
+            pubkey,
+            is_signer: false,
+            is_writable: true,
+        })
+        .collect();
+
+    // Send the transaction with remaining accounts
     let tx_hash = program
         .request()
         .accounts(tax_token::accounts::Harvest {
             mint_account: *mint_account,
             token_program: *token_2022_program_id,
         })
+        .accounts(remaining_accounts)
+        .args(tax_token::instruction::Harvest {})
         .signer(keypair)
-        .send()?;
+        .send()
+        .await?;
+
+    println!("Completed Harvest...");
     Ok(tx_hash)
 }
 
 /// Withdraws harvested taxes to the admin's associated token account (ATA)
-///
-/// # Arguments
-/// * `program` - The tax program instance
-/// * `mint_account` - The token mint address
-/// * `token_2022_program_id` - The Token-2022 program ID
-/// * `keypair` - The signing keypair
-/// * `authority` - The authority's public key
-/// * `authority_ata` - The authority's associated token account
-///
-/// # Returns
-/// A `Result` containing the transaction signature, or an error if the withdrawal fails
 async fn withdraw(
     program: &Program<Arc<Keypair>>,
     mint_account: &Pubkey,
@@ -437,6 +360,8 @@ async fn withdraw(
     authority: &Pubkey,
     authority_ata: &Pubkey,
 ) -> Result<Signature, anyhow::Error> {
+    println!("Starting withdraw...");
+
     let tx_hash = program
         .request()
         .accounts(tax_token::accounts::Withdraw {
@@ -445,106 +370,136 @@ async fn withdraw(
             token_account: *authority_ata,
             token_program: *token_2022_program_id,
         })
+        .args(tax_token::instruction::Withdraw)
         .signer(keypair)
-        .send()?;
+        .send()
+        .await?;
+
+    println!("Completed withdraw...");
     Ok(tx_hash)
 }
 
+#[derive(BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "borsh")]
+pub struct SwapV2 {
+    amount: u64,
+    other_amount_threshold: u64,
+    sqrt_price_limit_x64: u128,
+    is_base_input: bool,
+}
+
 /// Executes a swap on the Raydium Concentrated Liquidity Market Maker (CLMM)
-///
-/// # Arguments
-/// * `program` - The Raydium CLMM program instance
-/// * `payer` - The payer keypair
-/// * `pool_id` - The pool identifier
-/// * `amm_config` - The AMM configuration address
-/// * `input_token_account` - The input token account
-/// * `output_token_account` - The output token account
-/// * `input_vault` - The input vault address
-/// * `output_vault` - The output vault address
-/// * `tick_array` - The tick array address
-/// * `input_vault_mint` - The input vault mint address
-/// * `output_vault_mint` - The output vault mint address
-/// * `token_program_id` - The token program ID
-/// * `token_2022_program_id` - The Token-2022 program ID
-/// * `memo_program_id` - The memo program ID
-/// * `amount_in` - The input amount
-/// * `amount_out_minimum` - The minimum output amount
-///
-/// # Returns
-/// A `Result` containing the transaction signature, or an error if the swap fails
 async fn swap_clmm(
-    program: &Program<Arc<Keypair>>,
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
     payer: &Keypair,
-    pool_id: Pubkey,
+    pool_state: Pubkey,
     amm_config: Pubkey,
     input_token_account: Pubkey,
     output_token_account: Pubkey,
     input_vault: Pubkey,
     output_vault: Pubkey,
-    tick_array: Pubkey,
-    input_vault_mint: Pubkey,
-    output_vault_mint: Pubkey,
-    token_program_id: Pubkey,
-    token_2022_program_id: Pubkey,
-    memo_program_id: Pubkey,
+    input_token_mint: Pubkey,
+    output_token_mint: Pubkey,
+    input_token_program: Pubkey,
+    output_token_program: Pubkey,
     amount_in: u64,
-    amount_out_minimum: u64,
 ) -> Result<Signature, anyhow::Error> {
-    let (observation, _) =
-        Pubkey::find_program_address(&[b"observation", pool_id.as_ref()], &program.id());
-
-    let mut data = vec![9]; // Instruction discriminator for swap
-    data.extend_from_slice(&amount_in.to_le_bytes());
-    data.extend_from_slice(&amount_out_minimum.to_le_bytes());
-    data.extend_from_slice(&0u128.to_le_bytes()); // sqrt_price_limit (set to 0 for no limit)
-    data.push(1); // direction (1 for base-to-quote)
+    println!("Starting swap...");
+    let observation_state = Pubkey::from_str("4ujXUVoCPsUtUyWjWAoBe7enohp3WZvReFGboG4vU3NF")?;
 
     let accounts = vec![
         AccountMeta::new(payer.pubkey(), true),
-        AccountMeta::new_readonly(amm_config, false),
-        AccountMeta::new(pool_id, false),
+        AccountMeta::new(amm_config, false),
+        AccountMeta::new(pool_state, false),
         AccountMeta::new(input_token_account, false),
         AccountMeta::new(output_token_account, false),
         AccountMeta::new(input_vault, false),
         AccountMeta::new(output_vault, false),
-        AccountMeta::new(observation, false),
-        AccountMeta::new_readonly(token_program_id, false),
-        AccountMeta::new_readonly(token_2022_program_id, false),
-        AccountMeta::new_readonly(memo_program_id, false),
-        AccountMeta::new_readonly(input_vault_mint, false),
-        AccountMeta::new_readonly(output_vault_mint, false),
-        AccountMeta::new(tick_array, false),
+        AccountMeta::new(observation_state, false),
+        AccountMeta::new(output_token_program, false),
+        AccountMeta::new(input_token_program, false),
+        AccountMeta::new(
+            Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")?,
+            false,
+        ),
+        AccountMeta::new(input_token_mint, false),
+        AccountMeta::new(output_token_mint, false),
+        AccountMeta::new(
+            Pubkey::from_str("4xsACyKdzNbpE7QteqyGvXvuvQCrYmho1W1HPbWS6QWN")?,
+            false,
+        ),
+        AccountMeta::new(
+            Pubkey::from_str("8xoo3dW62Fa6jpnwY3Rv3EiuhBqaVryHRoNzVcUoogrx")?,
+            false,
+        ),
+        AccountMeta::new(
+            Pubkey::from_str("47Wkp1HLuHhYkiVhVK32JeWofK7Ur65hW2JwDNjWJyJG")?,
+            false,
+        ),
     ];
 
-    let instruction = Instruction {
-        program_id: program.id(),
-        accounts,
-        data,
+    let instruction_data = SwapV2 {
+        amount: amount_in,
+        other_amount_threshold: 0,
+        sqrt_price_limit_x64: 0,
+        is_base_input: true,
     };
 
-    let tx_hash = program
-        .request()
-        .instruction(instruction)
-        .signer(payer)
-        .send()?;
-    Ok(tx_hash)
+    let discriminant = get_discriminant("global", "swap_v2");
+    let ix = Instruction::new_with_borsh(
+        program_id.clone(),
+        &(discriminant, instruction_data),
+        accounts.clone(),
+    );
+
+    // get latest block hash
+    let blockhash = rpc_client.get_latest_blockhash().await?;
+
+    // construct message
+    let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
+
+    //construct transaction
+    let mut tx = Transaction::new_unsigned(msg);
+
+    // sign transaction
+    tx.sign(&[&payer], tx.message.recent_blockhash);
+
+    let tx_hash = rpc_client
+        .send_transaction_with_config(
+            &tx,
+            RpcSendTransactionConfig {
+                skip_preflight: false,
+                preflight_commitment: Some(CommitmentLevel::Confirmed),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    match tx_hash {
+        Ok(hash) => {
+            println!("Completed swap with tx: {}", hash);
+            Ok(hash)
+        }
+        Err(e) => {
+            if let solana_client::client_error::ClientErrorKind::RpcError(
+                solana_client::rpc_request::RpcError::RpcResponseError { data, .. },
+            ) = &e.kind
+            {
+                if let RpcResponseErrorData::SendTransactionPreflightFailure(preflight) = data {
+                    println!("Preflight failure logs:");
+                    if let Some(logs) = &preflight.logs {
+                        for (i, log) in logs.iter().enumerate() {
+                            println!("Log {}: {}", i, log);
+                        }
+                    }
+                }
+            }
+            Err(anyhow::anyhow!("Transaction failed: {:?}", e))
+        }
+    }
 }
 
-/// Distributes rewards proportionally to token holders
-///
-/// # Arguments
-/// * `rpc_client` - The RPC client for network queries
-/// * `client` - The Anchor client instance
-/// * `tax_token_mint` - The tax token mint address
-/// * `reward_token_mint` - The reward token mint address
-/// * `total_rewards` - The total rewards to distribute
-/// * `payer` - The payer keypair
-/// * `token_program_id` - The token program ID
-/// * `token_2022_program_id` - The Token-2022 program ID
-/// * `ata_program_id` - The associated token account program ID
-///
-/// # Returns
-/// A `Result` indicating success or an error if distribution fails
 async fn distribute_rewards(
     rpc_client: RpcClient,
     client: Client<Arc<Keypair>>,
@@ -556,48 +511,27 @@ async fn distribute_rewards(
     _token_2022_program_id: Pubkey,
     ata_program_id: Pubkey,
 ) -> Result<(), anyhow::Error> {
-    // Get token supply
     let mint_info = rpc_client.get_token_supply(tax_token_mint).await?;
     let total_supply = mint_info.ui_amount.unwrap_or(0.0) as u64;
 
-    // Create config for fetching token accounts
-    let config = RpcProgramAccountsConfig {
-        filters: Some(vec![
-            RpcFilterType::DataSize(spl_token::state::Account::LEN as u64),
-            RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
-                0,
-                tax_token_mint.to_string().as_bytes(),
-            )),
-        ]),
-        account_config: RpcAccountInfoConfig {
-            encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-            ..RpcAccountInfoConfig::default()
-        },
-        with_context: Some(false),
-    };
+    let accounts =
+        get_token_accounts(&tax_token_mint, None, 1, 1000, None, None, None, false).await;
+    if accounts.is_err() {
+        return Err(anyhow!("Failed to get holders"));
+    }
+    let accounts = accounts.unwrap();
 
-    // Get all token accounts
-    let accounts = rpc_client
-        .get_program_accounts_with_config(&token_program_id, config)
-        .await?;
-
-    // Process token accounts and create distribution data
     let mut distribution_data = Vec::new();
-    for (_pubkey, account) in accounts {
-        let token_account = spl_token::state::Account::unpack(&account.data)?;
-        let balance = token_account.amount;
-
-        if balance > 0 {
-            let owner = token_account.owner;
+    for (_, (balance, wallet)) in accounts {
+        if balance > 0.0 {
             let reward = (balance as u128 * total_rewards as u128 / total_supply as u128) as u64;
 
             if reward > 0 {
-                distribution_data.push((owner, reward));
+                distribution_data.push((wallet, reward));
             }
         }
     }
 
-    // Get admin reward ATA
     let (admin_reward_ata, _) = Pubkey::find_program_address(
         &[
             payer.pubkey().as_ref(),
@@ -607,85 +541,49 @@ async fn distribute_rewards(
         &ata_program_id,
     );
 
-    // Clone necessary data for concurrent tasks
-    let client_arc = Arc::new(client); // Share the client across tasks
-    let payer_arc = Arc::new(payer.insecure_clone());
-    let rpc_client_arc = Arc::new(rpc_client);
+    let program = client.program(token_program_id)?;
 
-    // Process distributions concurrently in batches
-    const BATCH_SIZE: usize = 25;
-    let mut tasks = Vec::new();
+    for (owner, reward) in distribution_data.iter() {
+        let owner = Pubkey::from_str(&owner)?;
+        let (holder_ata, _) = Pubkey::find_program_address(
+            &[
+                owner.as_ref(),
+                token_program_id.as_ref(),
+                reward_token_mint.as_ref(),
+            ],
+            &ata_program_id,
+        );
 
-    for chunk in distribution_data.chunks(BATCH_SIZE) {
-        let chunk_tasks: Vec<_> = chunk
-            .iter()
-            .map(|&(owner, reward)| {
-                let client = Arc::clone(&client_arc);
-                let payer = Arc::clone(&payer_arc);
-                let rpc_client = Arc::clone(&rpc_client_arc);
-                let admin_reward_ata = admin_reward_ata;
-                let token_program_id = token_program_id;
-                let ata_program_id = ata_program_id;
-                let reward_token_mint = *reward_token_mint;
+        if rpc_client.get_account(&holder_ata).await.is_err() {
+            let ix = spl_associated_token_account::instruction::create_associated_token_account(
+                &payer.pubkey(),
+                &owner,
+                reward_token_mint,
+                &token_program_id,
+            );
+            program
+                .request()
+                .instruction(ix)
+                .signer(payer)
+                .send()
+                .await?;
+        }
 
-                tokio::spawn(async move {
-                    // Derive the program inside the task
-                    let program = client.program(token_program_id)?;
+        let ix = spl_token::instruction::transfer(
+            &token_program_id,
+            &admin_reward_ata,
+            &holder_ata,
+            &payer.pubkey(),
+            &[&payer.pubkey()],
+            *reward,
+        )?;
 
-                    let (holder_ata, _) = Pubkey::find_program_address(
-                        &[
-                            owner.as_ref(),
-                            token_program_id.as_ref(),
-                            reward_token_mint.as_ref(),
-                        ],
-                        &ata_program_id,
-                    );
-
-                    // Create ATA if it doesn't exist
-                    if rpc_client.get_account(&holder_ata).await.is_err() {
-                        let ix = spl_associated_token_account::instruction::create_associated_token_account(
-                            &payer.pubkey(),
-                            &owner,
-                            &reward_token_mint,
-                            &token_program_id,
-                        );
-                        program
-                            .request()
-                            .instruction(ix)
-                            .signer(&*payer)
-                            .send()
-                            ?;
-                    }
-
-                    // Transfer reward tokens
-                    let ix = spl_token::instruction::transfer(
-                        &token_program_id,
-                        &admin_reward_ata,
-                        &holder_ata,
-                        &payer.pubkey(),
-                        &[&payer.pubkey()],
-                        reward,
-                    )?;
-
-                    program
-                        .request()
-                        .instruction(ix)
-                        .signer(&*payer)
-                        .send()
-                        ?;
-
-                    Ok::<(), anyhow::Error>(())
-                })
-            })
-            .collect();
-
-        tasks.extend(chunk_tasks);
-    }
-
-    // Await all tasks and collect results
-    let results = join_all(tasks).await;
-    for result in results {
-        result??; // Propagate any JoinError or anyhow::Error
+        program
+            .request()
+            .instruction(ix)
+            .signer(payer)
+            .send()
+            .await?;
     }
 
     println!(
@@ -695,3 +593,68 @@ async fn distribute_rewards(
     );
     Ok(())
 }
+
+// async fn distribute_tokens(
+//     rpc_client: RpcClient,
+//     client: Client<Arc<Keypair>>,
+//     tax_token_mint: &Pubkey,
+//     total_rewards: u64,
+//     payer: &Keypair,
+//     admin_ata: &Pubkey,
+//     token_2022_program_id: Pubkey,
+// ) -> Result<(), anyhow::Error> {
+//     let accounts =
+//         get_token_accounts(&tax_token_mint, None, 1, 1000, None, None, None, false).await;
+//     if accounts.is_err() {
+//         return Err(anyhow!("Failed to get holders"));
+//     }
+//     let accounts = accounts.unwrap();
+
+//     println!("Admin ATA: {}", admin_ata);
+
+//     let admin_account_info = rpc_client.get_account(admin_ata).await?;
+//     if admin_account_info.owner != token_2022_program_id {
+//         return Err(anyhow!(
+//             "Admin ATA is not owned by the expected program id",
+//         ));
+//     }
+
+//     let mint_info = rpc_client.get_token_supply(tax_token_mint).await?;
+//     let mint_account_info = rpc_client.get_account(tax_token_mint).await?;
+//     if mint_account_info.owner != token_2022_program_id {
+//         return Err(anyhow!("Mint is not owned by the expected program id"));
+//     }
+
+//     let total_supply = mint_info.ui_amount.unwrap_or(0.0) as u64;
+
+//     println!("Token 2022 program id: {}", token_2022_program_id);
+
+//     let program = client.program(token_2022_program_id)?;
+
+//     println!("Reached here");
+
+//     for (acc, (bal, _)) in accounts {
+//         let holder_ata = Pubkey::from_str(&acc)?;
+//         println!("Holder ATA {}", holder_ata);
+
+//         let reward = (bal as u128 * total_rewards as u128 / total_supply as u128) as u64;
+//         let ix = spl_token_2022::instruction::transfer(
+//             &token_2022_program_id,
+//             &admin_ata,
+//             &holder_ata,
+//             &payer.pubkey(),
+//             &[&payer.pubkey()],
+//             reward,
+//         )?;
+//         match program.request().instruction(ix).signer(payer).send().await {
+//             Ok(_) => {}
+//             Err(e) => {
+//                 eprintln!("\nError distributing to {}: {}", holder_ata, e);
+//             }
+//         }
+//     }
+
+//     println!("Distributed reward successfully.");
+
+//     Ok(())
+// }

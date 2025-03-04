@@ -9,13 +9,16 @@ import {
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   getOrCreateAssociatedTokenAccount,
-  mintTo
+  mintTo,
+  setAuthority,
+  AuthorityType
 } from "@solana/spl-token";
 import { assert } from "chai";
 import { ASSOCIATED_PROGRAM_ID } from "@coral-xyz/anchor/dist/cjs/utils/token";
 import { readFileSync } from "fs";
 import path from 'path';
 import os from 'os';
+import { WSOL } from "@raydium-io/raydium-sdk";
 
 function loadSecretKey(filePath: string): Uint8Array {
   try {
@@ -47,19 +50,41 @@ describe("tax-token", () => {
   // const authority = Keypair.generate();
   const secretKeyFilePath = process.env.PAYER_SECRET_KEY || '~/.config/solana/id.json';
   const payerSecretKey = loadSecretKey(secretKeyFilePath);
+  // console.log("Secret key: ", payerSecretKey);
   const authority = Keypair.fromSecretKey(payerSecretKey);
   
-  // Test data
-  const tokenName = "Tax Token";
-  const tokenSymbol = "TAX";
-  const tokenUri = "https://pbs.twimg.com/profile_images/1577719586040025131/p1zeCklU_400x400.jpg";
+  // // Test data
+  // const tokenName = "Tax Token";
+  // const tokenSymbol = "TAX";
+  // const tokenUri = "https://pbs.twimg.com/profile_images/1577719586040025131/p1zeCklU_400x400.jpg";
+  // const tokenDecimals = 9;
+  // const tokenTotalSupply = 1_000_000_000 * 10 ** tokenDecimals; // 1 billion tokens
+
+  const tokenName = "Infinite Boner Glitch";
+  const tokenSymbol = "IBG";
+  const tokenUri = "https://i.postimg.cc/vZ2SprC5/1895162724780515330.jpg";
   const tokenDecimals = 9;
-  const tokenTotalSupply = 1_000_000_000 * 10 ** tokenDecimals; // 1 billion tokens
+  const tokenTotalSupply = 69_000_000 * 10 ** tokenDecimals; // 1 billion tokens
+
 
   // Find PDA addresses
   const [statePda] = PublicKey.findProgramAddressSync(
     [Buffer.from("program_state")],
     program.programId
+  );
+
+  const METADATA_SEED = "metadata";
+  const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+  );
+
+  const [metadataAddress] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from(METADATA_SEED),
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      tokenMintKeypair.publicKey.toBuffer(),
+    ],
+    TOKEN_METADATA_PROGRAM_ID
   );
 
   // const admin = Keypair.generate();
@@ -73,129 +98,164 @@ describe("tax-token", () => {
     secretKey: tokenMintKeypair.secretKey
   }
 
-  it("Initializes the tax token", async () => {
-    console.log("Starting tax token initialization test...");
+  // it("Initializes the tax token", async () => {
+  //   console.log("Starting tax token initialization test...");
 
-    // await program.provider.connection.confirmTransaction(
-    //   await program.provider.connection.requestAirdrop(
-    //     admin.publicKey,
-    //     3 * LAMPORTS_PER_SOL
-    //   ),
-    //   "confirmed"
-    // );
+  //   // await program.provider.connection.confirmTransaction(
+  //   //   await program.provider.connection.requestAirdrop(
+  //   //     admin.publicKey,
+  //   //     3 * LAMPORTS_PER_SOL
+  //   //   ),
+  //   //   "confirmed"
+  //   // );
 
-    // await program.provider.connection.confirmTransaction(
-    //   await program.provider.connection.requestAirdrop(
-    //     authority.publicKey,
-    //     3 * LAMPORTS_PER_SOL
-    //   ),
-    //   "confirmed"
-    // );
+  //   // await program.provider.connection.confirmTransaction(
+  //   //   await program.provider.connection.requestAirdrop(
+  //   //     authority.publicKey,
+  //   //     3 * LAMPORTS_PER_SOL
+  //   //   ),
+  //   //   "confirmed"
+  //   // );
 
-    // await program.provider.connection.confirmTransaction(
-    //   await program.provider.connection.requestAirdrop(
-    //     program.provider.publicKey,
-    //     3 * LAMPORTS_PER_SOL
-    //   ),
-    //   "confirmed"
-    // );
+  //   // await program.provider.connection.confirmTransaction(
+  //   //   await program.provider.connection.requestAirdrop(
+  //   //     program.provider.publicKey,
+  //   //     3 * LAMPORTS_PER_SOL
+  //   //   ),
+  //   //   "confirmed"
+  //   // );
 
-    const tokenMint =  tokenMintKeypair.publicKey;   
+  //   const tokenMint =  tokenMintKeypair.publicKey;   
     
-    console.log("Creating reward mint...");
-    // Create the reward mint first (this would typically be an existing token in a real scenario)
-    const rewardMint = await createMint(
-      provider.connection,
-      authority,
-      authority.publicKey,
-      null,
-      tokenDecimals,
-      rewardMintKeypair,
-      undefined,
-      TOKEN_PROGRAM_ID
-    );
-    const rewardTokenAccountAddress = getAssociatedTokenAddressSync(rewardMint, authority.publicKey, false, TOKEN_PROGRAM_ID);
+  //   console.log("Creating reward mint...");
+  //   // Create the reward mint first (this would typically be an existing token in a real scenario)
+  //   // const rewardMint = await createMint(
+  //   //   provider.connection,
+  //   //   authority,
+  //   //   authority.publicKey,
+  //   //   null,
+  //   //   tokenDecimals,
+  //   //   rewardMintKeypair,
+  //   //   undefined,
+  //   //   TOKEN_PROGRAM_ID
+  //   // );
+  //   const rewardMint = new PublicKey(WSOL.mint);
+  //   const rewardTokenAccountAddress = getAssociatedTokenAddressSync(rewardMint, authority.publicKey, false, TOKEN_PROGRAM_ID);
 
-    mintTo(
-      provider.connection,
-      authority,
-      rewardMint,
-      rewardTokenAccountAddress,
-      authority,
-      tokenTotalSupply * 10 ** 9
-    )
+  //   // mintTo(
+  //   //   provider.connection,
+  //   //   authority,
+  //   //   rewardMint,
+  //   //   rewardTokenAccountAddress,
+  //   //   authority,
+  //   //   tokenTotalSupply * 10 ** 9
+  //   // )
 
-    console.log("Initializing tax token...");
-    try {
-      // Call the initialize function
-      const initCtx = {
-        state: statePda,
-        tokenMint: tokenMintKeypair.publicKey,
-        authority: authority.publicKey,
-        rewardMint: rewardMint,
-        systemProgram: SystemProgram.programId,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      };
+  //   console.log("Initializing tax token...");
+  //   try {
+  //     // Call the initialize function
+  //     const initCtx = {
+  //       state: statePda,
+  //       tokenMint: tokenMintKeypair.publicKey,
+  //       authority: authority.publicKey,
+  //       rewardMint: rewardMint,
+  //       metadata: tokenMintKeypair.publicKey,
+  //       tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+  //       systemProgram: SystemProgram.programId,
+  //       tokenProgram: TOKEN_2022_PROGRAM_ID,
+  //       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+  //       rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+  //     };
 
-      const tx = await program.methods
-        .initialize(
-          {
-            name: tokenName,
-            symbol: tokenSymbol,
-            uri: tokenUri,
-            decimals: tokenDecimals,
-            totalSupply: new anchor.BN(tokenTotalSupply.toString()),
-          }
-      )
-        .accounts(initCtx)
-        .signers([mintSig, sig])
-        .rpc({ commitment: "confirmed" });
+  //     const tx = await program.methods
+  //       .initialize(
+  //         {
+  //           name: tokenName,
+  //           symbol: tokenSymbol,
+  //           uri: tokenUri,
+  //           decimals: tokenDecimals,
+  //           totalSupply: new anchor.BN(tokenTotalSupply.toString()),
+  //         }
+  //     )
+  //       .accounts(initCtx)
+  //       .signers([mintSig, sig])
+  //       .rpc({ commitment: "confirmed" });
       
-      console.log("Transaction signature:", tx);
+  //     console.log("Transaction signature:", tx);
       
-      // Fetch the program state to verify initialization
-      const state = await program.account.programState.fetch(statePda);
-      const senderTokenAccountAddress = getAssociatedTokenAddressSync(tokenMintKeypair.publicKey, authority.publicKey, false, TOKEN_2022_PROGRAM_ID);
+  //     // Fetch the program state to verify initialization
+  //     const state = await program.account.programState.fetch(statePda);
+  //     const senderTokenAccountAddress = getAssociatedTokenAddressSync(tokenMintKeypair.publicKey, authority.publicKey, false, TOKEN_2022_PROGRAM_ID);
       
-      // Assert the state was properly initialized
-      assert.equal(state.authority.toString(), authority.publicKey.toString());
-      assert.equal(state.tokenMint.toString(), tokenMint.toString());
-      assert.equal(state.rewardMint.toString(), rewardMint.toString());
+  //     // Assert the state was properly initialized
+  //     assert.equal(state.authority.toString(), authority.publicKey.toString());
+  //     assert.equal(state.tokenMint.toString(), tokenMint.toString());
+  //     assert.equal(state.rewardMint.toString(), rewardMint.toString());
 
-      console.log("Admin: ", authority.publicKey);
-      console.log("Tax Program ID: ", program.programId);
-      console.log("Tax token Mint: ", tokenMint);
-      console.log("TaxTokenATA: ", senderTokenAccountAddress);
-      console.log("Reward Mint: ", rewardMint);
-      console.log("Reward ATA: ", rewardTokenAccountAddress);
+  //     console.log("Admin: ", authority.publicKey);
+  //     console.log("Tax Program ID: ", program.programId);
+  //     console.log("Tax token Mint: ", tokenMint);
+  //     console.log("TaxTokenATA: ", senderTokenAccountAddress);
+  //     console.log("Reward Mint: ", rewardMint);
+  //     console.log("Reward ATA: ", rewardTokenAccountAddress);
       
-      console.log("✅ Test passed - Tax token initialized successfully!");
-    } catch (err) {
-      console.error("Error in initialization:", err);
-      throw err;
-    }
-  });
+  //     console.log("✅ Test passed - Tax token initialized successfully!");
+  //   } catch (err) {
+  //     console.error("Error in initialization:", err);
+  //     throw err;
+  //   }
+  // });
 
   it('Mint Tokens', async () => {
     try {
-      const senderTokenAccountAddress = getAssociatedTokenAddressSync(tokenMintKeypair.publicKey, authority.publicKey, false, TOKEN_2022_PROGRAM_ID);
+      // const senderTokenAccountAddress = getAssociatedTokenAddressSync(tokenMintKeypair.publicKey, authority.publicKey, false, TOKEN_2022_PROGRAM_ID);
 
-      await getOrCreateAssociatedTokenAccount(
-        provider.connection,
-        authority,
-        tokenMintKeypair.publicKey,
-        authority.publicKey,
-        false,
-        null,
-        null,
-        TOKEN_2022_PROGRAM_ID,
-        ASSOCIATED_PROGRAM_ID,
-      );
+      // await getOrCreateAssociatedTokenAccount(
+      //   provider.connection,
+      //   authority,
+      //   tokenMintKeypair.publicKey,
+      //   authority.publicKey,
+      //   false,
+      //   null,
+      //   null,
+      //   TOKEN_2022_PROGRAM_ID,
+      //   ASSOCIATED_PROGRAM_ID,
+      // );
 
-      const mintRes = await mintTo(provider.connection, authority, tokenMintKeypair.publicKey, senderTokenAccountAddress, authority, tokenTotalSupply, [], null, TOKEN_2022_PROGRAM_ID);  
-      console.log("Transaction Signature: ", mintRes)
+      // const mintRes = await mintTo(provider.connection, authority, tokenMintKeypair.publicKey, senderTokenAccountAddress, authority, tokenTotalSupply, [], null, TOKEN_2022_PROGRAM_ID);  
+      
+      // Replace with your Token-2022 mint address
+      const mint = new PublicKey("7GxeLp8WrgxkgdUs3JkzLe45x928EtdFEmvQYWehDrdm");
+    
+      // Revoke Mint Authority
+      // await setAuthority(
+      //   provider.connection,
+      //   authority,                  // Payer of the transaction fees
+      //   mint,                  // Mint address of the token
+      //   authority.publicKey,         // Current mint authority (must sign)
+      //   AuthorityType.MintTokens, // Authority type to revoke
+      //   null,                  // New authority (null to disable)
+      //   [],                    // Additional signers (if any)
+      //   undefined,             // Confirmation options (default)
+      //   TOKEN_2022_PROGRAM_ID  // Token-2022 program ID
+      // );
+      // console.log('Mint authority revoked.');
+    
+      // Revoke Freeze Authority
+      // await setAuthority(
+      //   provider.connection,
+      //   authority, // Payer of the transaction fees
+      //   mint,                  // Mint address of the token
+      //   authority.publicKey,         // Current freeze authority (must sign)
+      //   AuthorityType.FreezeAccount, // Authority type to revoke
+      //   null,                  // New authority (null to disable)
+      //   [],                    // Additional signers (if any)
+      //   undefined,             // Confirmation options (default)
+      //   TOKEN_2022_PROGRAM_ID  // Token-2022 program ID
+      // );
+      // console.log('Freeze authority revoked.');
+      
+      // console.log("Transaction Signature: ", mintRes)
       console.log("✅ Mint passed - Token minted successfully!");
     } catch (error) {
       console.error("Error minting tokens");

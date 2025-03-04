@@ -5,7 +5,7 @@ use anchor_lang::prelude::*;
 mod instructions;
 use instructions::*;
 
-declare_id!("6wgDw4z2yv7eqJnuvZFgyGE3m4pVGnd77pGsjPdc6z8B");
+declare_id!("C4ZgZJSwHg65gZsLoa9gt7nitzeMFRMD6eK6xMEgdyPg");
 
 const TAX_BASIS_POINT: u16 = 1000; // 10%
 

@@ -1,19 +1,19 @@
 [toolchain]
-package_manager = "yarn"
 
 [features]
 resolution = true
 skip-lint = false
 
 [programs.localnet]
-tax_token = "6wgDw4z2yv7eqJnuvZFgyGE3m4pVGnd77pGsjPdc6z8B"
+tax_token = "C4ZgZJSwHg65gZsLoa9gt7nitzeMFRMD6eK6xMEgdyPg"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
 # cluster = "localnet"
-cluster = "devnet"
+# cluster = "devnet"
+cluster = "mainnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
