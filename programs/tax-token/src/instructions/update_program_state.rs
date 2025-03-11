@@ -17,6 +17,8 @@ pub fn process_update_program_state(
 ) -> Result<()> {
     let state: &mut Account<'_, ProgramState> = &mut ctx.accounts.state;
 
+    assert_eq!(state.authority, ctx.accounts.authority.key());
+
     if authority.is_some() {
         state.authority = authority.unwrap();
     }

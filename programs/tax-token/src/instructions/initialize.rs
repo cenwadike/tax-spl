@@ -159,17 +159,17 @@ pub fn process_initialize(ctx: Context<Initialize>, params: InitTokenParams) -> 
 #[instruction(params: InitTokenParams)]
 pub struct Initialize<'info> {
     #[account(
-    init,
-    payer = authority,
-    space = ProgramState::LEN,
-    seeds = [b"program_state"],
-    bump
-)]
+        init,
+        payer = authority,
+        space = ProgramState::LEN,
+        seeds = [b"program_state"],
+        bump
+    )]
     pub state: Account<'info, ProgramState>,
 
     #[account(mut)]
     pub token_mint: Signer<'info>,
-    
+
     #[account(mut)]
     pub authority: Signer<'info>,
 
